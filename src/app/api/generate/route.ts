@@ -15,7 +15,7 @@ import type {
 import { transform } from "esbuild";
 
 export const runtime = "nodejs";
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 const RequestSchema = z.object({
   prompt: z.string().trim().max(4000).optional(),
@@ -59,7 +59,7 @@ async function runVision(
         ],
       },
     ],
-    max_completion_tokens: 2048,
+    max_completion_tokens: 4096,
     temperature: 0.4,
     top_p: 0.9,
   });
@@ -110,16 +110,21 @@ async function runCodegen(
   const completion = await client.chat.completions.create({
     model: MIMO_MODELS.pro,
     messages,
-    max_completion_tokens: 8192,
-    temperature: attempt === 0 ? 0.6 : 0.3,
+    max_completion_tokens: 16384,
+    temperature: attempt === 0 ? 0.5 : 0.25,
     top_p: 0.9,
     response_format: { type: "json_object" },
   });
   const raw = completion.choices[0]?.message?.content ?? "";
+  const finish = completion.choices[0]?.finish_reason;
   const parsed = tryParseJson<GeneratedApp>(raw);
   if (!parsed || !parsed.files || !parsed.files["/App.js"]) {
+    const reason =
+      finish === "length"
+        ? "hit token cap (output truncated mid-JSON)"
+        : finish || "unparseable JSON";
     throw new Error(
-      `Code generation returned invalid JSON or missing /App.js. Raw start: ${raw.slice(0, 200)}`,
+      `Code generation returned invalid JSON or missing /App.js (${reason}). Raw start: ${raw.slice(0, 200)}`,
     );
   }
   return parsed;
@@ -204,11 +209,14 @@ export async function POST(req: Request) {
     );
   }
 
-  // Code generation with one repair retry (closed-loop verification).
+  // Code generation with up-to-3 attempts (closed-loop verification).
+  // Retries cover both compile errors (with repair prompt) and JSON/parse
+  // failures (re-roll with stricter settings).
   let app: GeneratedApp | null = null;
   let lastError: string | undefined;
+  let repairAttempts = 0;
   const codeStart = Date.now();
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const candidate = await runCodegen(
         client,
@@ -226,8 +234,10 @@ export async function POST(req: Request) {
       }
       app = candidate;
       lastError = check.error;
+      repairAttempts++;
     } catch (e) {
       lastError = e instanceof Error ? e.message : String(e);
+      repairAttempts++;
     }
   }
   const codeMs = Date.now() - codeStart;
@@ -244,6 +254,7 @@ export async function POST(req: Request) {
     app,
     models: { vision: visionModel, code: MIMO_MODELS.pro },
     timing: { visionMs, codeMs, totalMs: Date.now() - t0 },
+    repairAttempts,
   };
   if (lastError) {
     response.warning = `Compile check still reported issues after retry: ${lastError}`;

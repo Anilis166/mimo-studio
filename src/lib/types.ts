@@ -19,6 +19,7 @@ export interface GenerateResponse {
   app: GeneratedApp;
   models: { vision?: string; code: string };
   timing: { visionMs?: number; codeMs: number; totalMs: number };
+  repairAttempts?: number;
 }
 
 export interface GenerateRequest {

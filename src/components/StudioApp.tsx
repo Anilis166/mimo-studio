@@ -254,6 +254,9 @@ export function StudioApp() {
                   <span>vision: {result.timing.visionMs} ms</span>
                 )}
                 <span>codegen: {result.timing.codeMs} ms</span>
+                {typeof result.repairAttempts === "number" && (
+                  <span>repair attempts: {result.repairAttempts}</span>
+                )}
               </div>
             </div>
           )}
